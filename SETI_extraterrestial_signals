@@ -1,0 +1,284 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# 
+
+# In[ ]:
+
+
+import math
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from  scipy import ndimage
+from tqdm.notebook import tqdm
+
+
+# In[ ]:
+
+
+data_dir='../input/seti-breakthrough-listen/'
+
+
+# In[ ]:
+
+
+train_df = pd.read_csv(data_dir + "train_labels.csv")
+train_df["path"] = train_df["id"].apply(lambda x: f"{data_dir}train/{x[0]}/{x}.npy")
+train_df.head()
+test_df = pd.read_csv(data_dir + "sample_submission.csv")
+test_df["path"] = test_df["id"].apply(lambda x: f"{data_dir}test/{x[0]}/{x}.npy")
+
+
+# 
+
+# In[ ]:
+
+
+def normalize_t(x):
+    x = (x - np.mean(x, axis=2, keepdims=True)) / np.std(x, axis=2, keepdims=True)
+    return x
+
+
+def normalize_f(x):
+    x = (x - np.mean(x, axis=1, keepdims=True)) / np.std(x, axis=1, keepdims=True)
+    return x
+
+
+def normalize_tf(x):
+    x = (x - np.mean(x, axis=2, keepdims=True)) / np.std(x, axis=2, keepdims=True)
+    x = (x - np.mean(x, axis=1, keepdims=True)) / np.std(x, axis=1, keepdims=True)
+    return x
+
+
+def normalize_ft(x):
+    x = (x - np.mean(x, axis=1, keepdims=True)) / np.std(x, axis=1, keepdims=True)
+    x = (x - np.mean(x, axis=2, keepdims=True)) / np.std(x, axis=2, keepdims=True)
+    return x
+
+
+# In[ ]:
+
+
+def generate_template(img, min_x, max_x, min_y, max_y, threshold=0.5):
+    img = img[[0, 2, 4], :, :]
+    plt.figure()
+    plt.imshow(img.mean(axis=0))
+    img = normalize_ft(img)
+    img = img[:, min_x:max_x, min_y:max_y]
+    # for i in range(3):
+    #    plt.figure()
+    #    plt.imshow(img[i])
+    img = np.clip(img, 0, 3)
+    img = ndimage.median_filter(img, 3)
+    # for i in range(3):
+    #    plt.figure()
+    #    plt.imshow(img[i])
+    img = img.mean(axis=0)
+    img_b = img.copy()
+    img_b[img_b > threshold] = 1
+    img_b[img_b < threshold] = 0
+    plt.figure()
+    plt.imshow(img)
+    #plt.figure()
+    #plt.imshow(img_b)
+    return img, img_b
+
+
+# 
+
+# In[ ]:
+
+
+kaggle_file_path = data_dir + "train/2/2503d7f6e5c4.npy"
+alien_file_path = data_dir + "train/4/4f7bb8cf2d15.npy"
+rocket_file_path = data_dir + "train/6/6c12bab0aeb4.npy"
+
+image = np.load(kaggle_file_path).astype(np.float32)
+kaggle_template, kaggle_template_b = generate_template(image, 15, 70, 20, 170, 0.5)
+image = np.load(alien_file_path).astype(np.float32)
+alien_template, alien_template_b = generate_template(image, 60, 110, 50, 110, 0.5)
+image = np.load(rocket_file_path).astype(np.float32)
+rocket_template, rocket_template_b = generate_template(image, 55, 120, 45, 110, 0.5)
+
+
+# 
+
+# In[ ]:
+
+
+def template_matching(img, template, threshold, verbose=True):
+    img = img[[0, 2, 4], :, :]
+    img = normalize_ft(img)
+    img = np.clip(img, 0, 3)
+    #omit to speed up in kaggle notebook
+    #img = ndimage.median_filter(img, 3)
+    img = img.mean(axis=0)
+    w, h = template.shape[::-1]
+    # methods = ['cv2.TM_CCOEFF', 'cv2.TM_CCOEFF_NORMED', 'cv2.TM_CCORR',
+    #        'cv2.TM_CCORR_NORMED', 'cv2.TM_SQDIFF', 'cv2.TM_SQDIFF_NORMED']
+    method = eval("cv2.TM_SQDIFF_NORMED")
+
+    # Apply template Matching
+    res = cv2.matchTemplate(img, template, eval("cv2.TM_SQDIFF_NORMED"))
+    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+    if min_val < threshold and verbose:
+        # If the method is TM_SQDIFF or TM_SQDIFF_NORMED, take minimum
+        if method in [cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED]:
+            top_left = min_loc
+        else:
+            top_left = max_loc
+        bottom_right = (top_left[0] + w, top_left[1] + h)
+
+        cv2.rectangle(img, top_left, bottom_right, 1, 2)
+
+        print(min_val)
+        print(image_path)
+        plt.subplot(121), plt.imshow(res, cmap="gray")
+        plt.title("Matching Result"), plt.xticks([]), plt.yticks([])
+        plt.subplot(122), plt.imshow(img)
+        plt.title("Detected Point"), plt.xticks([]), plt.yticks([])
+        plt.show()
+    return min_val
+
+
+# 
+
+# In[ ]:
+
+
+threshold = 0.7
+
+min_vals = []
+for image_path in tqdm(train_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, kaggle_template, threshold=threshold)
+    min_vals.append(min_val)
+
+for image_path in tqdm(test_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, kaggle_template, threshold=threshold)
+    min_vals.append(min_val)
+
+min_vals = np.concatenate([min_vals])
+plt.figure()
+_ = plt.hist(min_vals, bins=100)
+
+
+# 
+
+# In[ ]:
+
+
+threshold = 0.35
+
+min_vals = []
+for image_path in tqdm(train_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, alien_template, threshold=threshold)
+    min_vals.append(min_val)
+
+
+for image_path in tqdm(test_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, alien_template, threshold=threshold)
+    min_vals.append(min_val)
+
+min_vals = np.concatenate([min_vals])
+plt.figure()
+_ = plt.hist(min_vals, bins=100)
+
+
+# 
+
+# In[ ]:
+
+
+threshold = 0.6
+
+min_vals = []
+for image_path in tqdm(train_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, rocket_template, threshold=threshold)
+    min_vals.append(min_val)
+
+
+for image_path in tqdm(test_df["path"].values):
+    img = np.load(image_path).astype(np.float32)
+    min_val = template_matching(img, rocket_template, threshold=threshold)
+    min_vals.append(min_val)
+
+min_vals = np.concatenate([min_vals])
+plt.figure()
+_ = plt.hist(min_vals, bins=100)
+
+
+# 
+
+# 
+
+# In[ ]:
+
+
+def easter_egg_postprocessing(sub_df, templates, thresholds, data_dir='../input/seti-breakthrough-listen/'):
+    processed_df = sub_df.copy()
+    processed_df["path"] = processed_df["id"].apply(
+        lambda x: f"{data_dir}test/{x[0]}/{x}.npy"
+    )
+    for cnt, row in tqdm(enumerate(processed_df[["id", "target", "path"]].values)):
+        # id = str(row[0])
+        # target = float(row[1])
+        path = str(row[2])
+        img = np.load(path).astype(np.float32)
+        for i in range(len(thresholds)):
+            min_val = template_matching(img, templates[i], threshold=thresholds[i])
+            if min_val < thresholds[i]:
+                print('path: '+path+', target: '+str(processed_df.loc[cnt, "target"])+' -> 1')
+                processed_df.loc[cnt, "target"] = 1
+    processed_df = processed_df.drop(["path"], axis=1)
+    return processed_df
+
+
+# In[ ]:
+
+
+sub_df = pd.read_csv("../input/seti-e-t-resnet18d-baseline/submission.csv")
+processed_df = easter_egg_postprocessing(
+    sub_df,
+    [kaggle_template, alien_template, rocket_template],
+    [0.5, 0.3, 0.5],
+    data_dir
+)
+processed_df.to_csv("sample_submission.csv", index=False)
+
+
+# 
+
+# In[ ]:
+
+
+egg_paths=['../input/train/2/2503d7f6e5c4.npy', 
+           '../input/train/8/805a7f4cac38.npy', 
+           '../input/test/e/e05a5e667d06.npy', 
+           '../input/train/4/4f7bb8cf2d15.npy', 
+           '../input/test/1/1397c4ab0e5c.npy', 
+           '../input/test/1/1725ceec6de4.npy', 
+           '../input/train/6/6c12bab0aeb4.npy', 
+           '../input/test/1/1e6e43ddc15a.npy', 
+           '../input/test/7/72bc12d576e2.npy']
+
+egg_ids=['2503d7f6e5c4', 
+        '805a7f4cac38', 
+        'e05a5e667d06', 
+        '4f7bb8cf2d15', 
+        '1397c4ab0e5c', 
+        '1725ceec6de4', 
+        '6c12bab0aeb4', 
+        '1e6e43ddc15a', 
+        '72bc12d576e2']
+
+
+# Should I omit eggs in train set when training NN models?
+# 
+# Any comments are welcome.
